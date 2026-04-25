@@ -6,11 +6,13 @@ import subprocess
 import time
 import google.generativeai as genai
 from bs4 import BeautifulSoup
+import re
 
 # Configuration
 STREAM_P2P_API_KEY = "a7165e18e69dc32127258688"
-GEMINI_API_KEY = "AIzaSyAP87S2pmV4N5ZinxSRqZpu6D1Y7CTidJg"
+GEMINI_API_KEY = "AIzaSyB07_z63Jz93_oRVrYPW1vCPsbWxiZMNBs"
 TORRENTSDB_API_BASE = "https://torrentsdb.com/stream/anime/"
+DOWNLOADED_LOG_FILE = "downloaded_anime.json"
 
 # Initialize AI
 genai.configure(api_key=GEMINI_API_KEY)
@@ -20,17 +22,43 @@ def get_model():
     models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
     for model_name in models:
         try:
-            # Check if model exists in the available list
             available_models = [m.name for m in genai.list_models()]
             full_name = f"models/{model_name}"
             if full_name in available_models:
+                print(f"Using Gemini model: {model_name}")
                 return genai.GenerativeModel(model_name)
-        except:
+        except Exception as e:
+            print(f"Error checking model {model_name}: {e}")
             continue
-    # Fallback to standard if listing fails
+    print("Falling back to gemini-1.5-flash")
     return genai.GenerativeModel("gemini-1.5-flash")
 
 model = get_model()
+
+def load_downloaded_log():
+    if os.path.exists(DOWNLOADED_LOG_FILE):
+        with open(DOWNLOADED_LOG_FILE, 'r') as f:
+            return json.load(f)
+    return []
+
+def save_downloaded_log(log):
+    with open(DOWNLOADED_LOG_FILE, 'w') as f:
+        json.dump(log, f, indent=4)
+
+def is_already_downloaded(anime_title, release_type, episode_number, downloaded_log):
+    for entry in downloaded_log:
+        if entry.get('anime_title') == anime_title and \
+           entry.get('release_type') == release_type and \
+           entry.get('episode_number') == episode_number:
+            return True
+    return False
+
+def extract_episode_number(title):
+    # Regex to find episode numbers like E01, EP01, #01, 01, S01E01
+    match = re.search(r'[EePpSs]?(\d{2,4})', title)
+    if match:
+        return match.group(1).lstrip('0') or '0'
+    return None
 
 def ai_research_anime(anime_name):
     print(f"AI Researching: {anime_name}")
@@ -50,7 +78,6 @@ def ai_research_anime(anime_name):
     try:
         response = model.generate_content(prompt)
         text = response.text
-        # Clean markdown if present
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
@@ -97,7 +124,6 @@ def search_sources(rel):
 
 def download_torrent(magnet, timeout=60):
     print(f"Downloading magnet: {magnet[:60]}...")
-    # aria2c settings for speed and reliability
     cmd = [
         "aria2c", 
         "--seed-time=0", 
@@ -117,7 +143,6 @@ def download_torrent(magnet, timeout=60):
         print(line.strip())
         
         if "DL:" in line:
-            # Check for stall (0B/s)
             if "DL:0B" in line:
                 if (time.time() - last_check) > timeout:
                     print("Download stalled for 1 minute. Moving on.")
@@ -129,16 +154,14 @@ def download_torrent(magnet, timeout=60):
         if process.poll() is not None: break
         
     if process.returncode == 0:
-        # Identify the downloaded file
         for f in os.listdir('.'):
             if f.endswith(('.mkv', '.mp4')):
                 return f
     return None
 
-def process_and_upload(file_path, info):
+def process_and_upload(file_path, info, downloaded_log):
     remaster = "Remastered" if info.get('remaster') else "Original"
     num = info.get('episodes', info.get('number', ''))
-    # (anime name) Type(movie ova special etc or tv) Number Original/Remastered Hs/Ss
     base_name = f"{info['title']} {info['type']} {num} {remaster}"
     
     ss_name = f"{base_name} Ss.mkv"
@@ -146,14 +169,12 @@ def process_and_upload(file_path, info):
     
     print(f"Processing: {base_name}")
     
-    # Softsub
     if os.path.exists(file_path):
         os.rename(file_path, ss_name)
     else:
         print(f"Error: Downloaded file {file_path} not found.")
         return
     
-    # Hardsub
     print("Hardsubbing...")
     try:
         subprocess.run([
@@ -164,7 +185,6 @@ def process_and_upload(file_path, info):
         print(f"Hardsubbing failed: {e}. Only Softsub will be uploaded.")
         hs_name = None
 
-    # Upload
     for f in [ss_name, hs_name]:
         if not f or not os.path.exists(f): continue
         size_gb = os.path.getsize(f) / (1024**3)
@@ -178,9 +198,16 @@ def process_and_upload(file_path, info):
         else:
             upload_to_streamp2p(f)
         
-        # Cleanup processed file
         try: os.remove(f)
         except: pass
+    
+    downloaded_log.append({
+        'anime_title': info['title'],
+        'release_type': info['type'],
+        'episode_number': num,
+        'timestamp': time.time()
+    })
+    save_downloaded_log(downloaded_log)
 
 def upload_to_streamp2p(file_path):
     print(f"Uploading {file_path}...")
@@ -190,24 +217,33 @@ def upload_to_streamp2p(file_path):
         upload_url = resp['result']
         with open(file_path, 'rb') as f:
             r = requests.post(upload_url, data={'key': STREAM_P2P_API_KEY}, files={'file': f}, timeout=7200)
-            print(f"Upload Result Status: {r.status_code}")
+            if r.status_code == 200:
+                print(f"Upload of {file_path} successful. Response: {r.json()}")
+            else:
+                print(f"Upload of {file_path} failed with status {r.status_code}. Response: {r.text}")
     except Exception as e:
-        print(f"Upload failed for {file_path}: {e}")
+        print(f"Upload failed for {file_path} due to exception: {e}")
 
 def main(anime_name):
+    downloaded_log = load_downloaded_log()
     releases = ai_research_anime(anime_name)
     for rel in releases:
+        episode_num = extract_episode_number(rel.get('title', '')) or rel.get('episodes', rel.get('number', ''))
+        
+        if is_already_downloaded(rel['title'], rel['type'], episode_num, downloaded_log):
+            print(f"Skipping {rel['title']} {rel['type']} {episode_num} - already downloaded.")
+            continue
+
         print(f"Found Release: {rel['title']} ({rel['type']})")
         results = search_sources(rel)
         if not results:
             print(f"No torrents found for {rel['title']}")
             continue
         
-        # Try top 3 magnets for each release
         for best in results[:3]:
             downloaded = download_torrent(best['magnet'])
             if downloaded:
-                process_and_upload(downloaded, rel)
+                process_and_upload(downloaded, rel, downloaded_log)
                 break
 
 if __name__ == "__main__":
