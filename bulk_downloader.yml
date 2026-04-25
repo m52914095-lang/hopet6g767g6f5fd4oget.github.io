@@ -1,0 +1,39 @@
+name: Bulk Anime Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      anime_name:
+        description: 'Anime Name to Research and Download'
+        required: true
+        default: 'Naruto'
+
+jobs:
+  bulk-download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Cleanup Environment
+        run: |
+          sudo apt-get remove -y google-cloud-sdk azure-cli microsoft-edge-stable firefox
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg aria2
+          pip install requests beautifulsoup4 google-generativeai
+
+      - name: Run Bulk Downloader
+        run: python bulk_downloader.py "${{ github.event.inputs.anime_name }}"
+        env:
+          STREAM_P2P_API_KEY: "a7165e18e69dc32127258688"
+          GEMINI_API_KEY: "AIzaSyAP87S2pmV4N5ZinxSRqZpu6D1Y7CTidJg"

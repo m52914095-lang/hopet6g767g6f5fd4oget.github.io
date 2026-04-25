@@ -1,0 +1,30 @@
+name: Detective Conan Weekly Tracker
+
+on:
+  schedule:
+    # Saturday at 7:31 AM EST is 11:31 AM UTC
+    - cron: '31 11 * * 6'
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  track-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg aria2
+          pip install requests feedparser
+
+      - name: Run Tracker
+        run: python conan_tracker.py
+        env:
+          STREAM_P2P_API_KEY: "a7165e18e69dc32127258688"
